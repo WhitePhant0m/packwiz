@@ -103,14 +103,14 @@ var detectCmd = &cobra.Command{
 				os.Exit(1)
 			}
 
-			path, ok := modPaths[v.File.Fingerprint]
-			if ok {
-				err = os.Remove(path)
-				if err != nil {
-					fmt.Println(err)
-					os.Exit(1)
-				}
-			}
+			// path, ok := modPaths[v.File.Fingerprint]
+			// if ok {
+			// 	err = os.Remove(path)
+			// 	if err != nil {
+			// 		fmt.Println(err)
+			// 		os.Exit(1)
+			// 	}
+			// }
 		}
 		fmt.Println("Detection complete!")
 
