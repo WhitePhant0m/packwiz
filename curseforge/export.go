@@ -107,18 +107,49 @@ var exportCmd = &cobra.Command{
 
 		cfFileRefs := make([]packinterop.AddonFileReference, 0, len(mods))
 		nonCfMods := make([]*core.Mod, 0)
+		fileIDs := make([]uint32, 0, len(mods))
+		cfModsMap := make(map[uint32]cfUpdateData) // Map fileID to mod data
+
 		for _, mod := range mods {
 			projectRaw, ok := mod.GetParsedUpdateData("curseforge")
-			// If the mod has curseforge metadata, add it to cfFileRefs
+			// If the mod has curseforge metadata, collect file IDs for batch lookup
 			if ok {
 				p := projectRaw.(cfUpdateData)
-				cfFileRefs = append(cfFileRefs, packinterop.AddonFileReference{
-					ProjectID:        p.ProjectID,
-					FileID:           p.FileID,
-					OptionalDisabled: mod.Option != nil && mod.Option.Optional && !mod.Option.Default,
-				})
+				fileIDs = append(fileIDs, p.FileID)
+				cfModsMap[p.FileID] = p
 			} else {
 				nonCfMods = append(nonCfMods, mod)
+			}
+		}
+
+		// Fetch download URLs for all CurseForge files in one API call
+		if len(fileIDs) > 0 {
+			fmt.Printf("Fetching download URLs for %d CurseForge files...\n", len(fileIDs))
+			fileInfos, err := cfDefaultClient.getFileInfoMultiple(fileIDs)
+			if err != nil {
+				fmt.Printf("Error fetching file information: %s\n", err)
+				os.Exit(1)
+			}
+
+			// Create a map of fileID to download URL for quick lookup
+			downloadURLs := make(map[uint32]string)
+			for _, fileInfo := range fileInfos {
+				downloadURLs[fileInfo.ID] = fileInfo.DownloadURL
+			}
+
+			// Now create the AddonFileReference objects with download URLs
+			for _, mod := range mods {
+				projectRaw, ok := mod.GetParsedUpdateData("curseforge")
+				if ok {
+					p := projectRaw.(cfUpdateData)
+					downloadURL := downloadURLs[p.FileID]
+					cfFileRefs = append(cfFileRefs, packinterop.AddonFileReference{
+						ProjectID:        p.ProjectID,
+						FileID:           p.FileID,
+						OptionalDisabled: mod.Option != nil && mod.Option.Optional && !mod.Option.Default,
+						DownloadURL:      downloadURL,
+					})
+				}
 			}
 		}
 

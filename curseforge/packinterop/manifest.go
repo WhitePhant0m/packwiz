@@ -14,9 +14,10 @@ type cursePackMeta struct {
 	Author          string `json:"author"`
 	ProjectID       uint32 `json:"projectID"`
 	Files           []struct {
-		ProjectID uint32 `json:"projectID"`
-		FileID    uint32 `json:"fileID"`
-		Required  bool   `json:"required"`
+		ProjectID   uint32 `json:"projectID"`
+		FileID      uint32 `json:"fileID"`
+		DownloadURL string `json:"downloadUrl"`
+		Required    bool   `json:"required"`
 	} `json:"files"`
 	Overrides string `json:"overrides"`
 	importSrc ImportPackSource
@@ -63,6 +64,7 @@ func (c cursePackMeta) Mods() []AddonFileReference {
 			ProjectID:        v.ProjectID,
 			FileID:           v.FileID,
 			OptionalDisabled: !v.Required,
+			DownloadURL:      v.DownloadURL,
 		}
 	}
 	return list

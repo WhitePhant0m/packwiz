@@ -67,20 +67,24 @@ type AddonFileReference struct {
 	FileID    uint32
 	// OptionalDisabled is true if the file is optional and disabled (turned off in Twitch launcher)
 	OptionalDisabled bool
+	// DownloadURL is the direct download URL for the file
+	DownloadURL string
 }
 
 func WriteManifestFromPack(pack core.Pack, fileRefs []AddonFileReference, projectID uint32, out io.Writer) error {
 	files := make([]struct {
-		ProjectID uint32 `json:"projectID"`
-		FileID    uint32 `json:"fileID"`
-		Required  bool   `json:"required"`
+		ProjectID   uint32 `json:"projectID"`
+		FileID      uint32 `json:"fileID"`
+		DownloadURL string `json:"downloadUrl"`
+		Required    bool   `json:"required"`
 	}, len(fileRefs))
 	for i, fr := range fileRefs {
 		files[i] = struct {
-			ProjectID uint32 `json:"projectID"`
-			FileID    uint32 `json:"fileID"`
-			Required  bool   `json:"required"`
-		}{ProjectID: fr.ProjectID, FileID: fr.FileID, Required: !fr.OptionalDisabled}
+			ProjectID   uint32 `json:"projectID"`
+			FileID      uint32 `json:"fileID"`
+			DownloadURL string `json:"downloadUrl"`
+			Required    bool   `json:"required"`
+		}{ProjectID: fr.ProjectID, FileID: fr.FileID, DownloadURL: fr.DownloadURL, Required: !fr.OptionalDisabled}
 	}
 
 	modLoaders := make([]modLoaderDef, 0, 1)
