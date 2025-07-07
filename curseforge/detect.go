@@ -2,12 +2,12 @@ package curseforge
 
 import (
 	"fmt"
+	"os"
+	"strings"
+
 	"github.com/aviddiviner/go-murmur"
 	"github.com/packwiz/packwiz/core"
 	"github.com/spf13/cobra"
-	"os"
-	"path/filepath"
-	"strings"
 )
 
 // TODO: make all of this less bad and hardcoded
@@ -33,7 +33,7 @@ var detectCmd = &cobra.Command{
 		// Walk files in the mods folder
 		var hashes []uint32
 		modPaths := make(map[uint32]string)
-		err = filepath.Walk("mods", func(path string, info os.FileInfo, err error) error {
+		err = core.WalkDirFollowSymlinks("mods", func(path string, info os.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}

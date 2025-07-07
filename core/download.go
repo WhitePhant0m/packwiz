@@ -436,7 +436,7 @@ func (c *CacheIndex) NewHandleFromHashes(hashes map[string]string) (*CacheIndexH
 }
 
 func (c *CacheIndex) MoveImportFiles() error {
-	return filepath.Walk(filepath.Join(c.cachePath, DownloadCacheImportFolder), func(path string, info os.FileInfo, err error) error {
+	return WalkFollowSymlinks(filepath.Join(c.cachePath, DownloadCacheImportFolder), func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}

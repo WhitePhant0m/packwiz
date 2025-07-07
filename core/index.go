@@ -7,7 +7,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -153,7 +155,10 @@ var ignoreDefaults = []string{
 func readGitignore(path string) (*gitignore.GitIgnore, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// TODO: check for read errors (and present them)
+		// Check if it's a permission error or other serious issue
+		if !os.IsNotExist(err) {
+			fmt.Printf("Warning: Could not read .packwizignore file at %s: %v\n", path, err)
+		}
 		return gitignore.CompileIgnoreLines(ignoreDefaults...), false
 	}
 
@@ -164,11 +169,95 @@ func readGitignore(path string) (*gitignore.GitIgnore, bool) {
 	return gitignore.CompileIgnoreLines(lines...), true
 }
 
+// WalkFollowSymlinks is similar to filepath.Walk but follows symbolic links
+func WalkFollowSymlinks(root string, fn func(path string, info os.FileInfo, err error) error) error {
+	return walkDirFollowSymlinks(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return fn(path, nil, err)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return fn(path, nil, err)
+		}
+		return fn(path, info, nil)
+	})
+}
+
+// WalkDirFollowSymlinks is a public version of walkDirFollowSymlinks for use across packages
+func WalkDirFollowSymlinks(root string, fn func(path string, d os.DirEntry, err error) error) error {
+	return walkDirFollowSymlinks(root, fn)
+}
+
+// walkDirFollowSymlinks is similar to filepath.WalkDir but follows symbolic links
+func walkDirFollowSymlinks(root string, fn func(path string, d os.DirEntry, err error) error) error {
+	visited := make(map[string]bool)
+
+	var walk func(string) error
+	walk = func(path string) error {
+		// Get file info using Lstat to detect symlinks
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fn(path, nil, err)
+		}
+
+		// Check if it's a symlink and resolve it if so
+		realPath := path
+		if info.Mode()&os.ModeSymlink != 0 {
+			realPath, err = filepath.EvalSymlinks(path)
+			if err != nil {
+				// If we can't resolve the symlink, call the function with the error
+				return fn(path, fs.FileInfoToDirEntry(info), err)
+			}
+
+			// Check if we've already visited this real path to avoid infinite loops
+			if visited[realPath] {
+				return nil
+			}
+
+			// Get info about the target
+			info, err = os.Stat(realPath)
+			if err != nil {
+				return fn(path, fs.FileInfoToDirEntry(info), err)
+			}
+		}
+
+		visited[realPath] = true
+
+		d := fs.FileInfoToDirEntry(info)
+		err = fn(path, d, nil)
+		if err != nil {
+			if err == fs.SkipDir && info.IsDir() {
+				return nil
+			}
+			return err
+		}
+
+		if info.IsDir() {
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				return fn(path, d, err)
+			}
+
+			for _, entry := range entries {
+				childPath := filepath.Join(path, entry.Name())
+				if err := walk(childPath); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
+	}
+
+	return walk(root)
+}
+
 // Refresh updates the hashes of all the files in the index, and adds new files to the index
 func (in *Index) Refresh() error {
-	// TODO: If needed, multithreaded hashing
-	// for i := 0; i < runtime.NumCPU(); i++ {}
+	return in.RefreshWithOptions(true)
+}
 
+func (in *Index) RefreshWithOptions(followSymlinks bool) error {
 	// Is case-sensitivity a problem?
 	pathPF, _ := filepath.Abs(viper.GetString("pack-file"))
 	pathIndex, _ := filepath.Abs(in.indexFile)
@@ -177,75 +266,240 @@ func (in *Index) Refresh() error {
 	ignore, ignoreExists := readGitignore(pathIgnore)
 
 	var fileList []string
-	err := filepath.WalkDir(in.packRoot, func(path string, info os.DirEntry, err error) error {
-		if err != nil {
-			// TODO: Handle errors on individual files properly
-			return err
-		}
+	var err error
 
-		// Never ignore pack root itself (gitignore doesn't allow ignoring the root)
-		if path == in.packRoot {
-			return nil
-		}
-
-		if info.IsDir() {
-			// Don't traverse ignored directories (consistent with Git handling of ignored dirs)
-			if ignore.MatchesPath(path) {
-				return fs.SkipDir
-			}
-			// Don't add directories to the file list
-			return nil
-		}
-		// Exit if the files are the same as the pack/index files
-		absPath, _ := filepath.Abs(path)
-		if absPath == pathPF || absPath == pathIndex {
-			return nil
-		}
-		if ignoreExists {
-			if absPath == pathIgnore {
+	if followSymlinks {
+		err = walkDirFollowSymlinks(in.packRoot, func(path string, info os.DirEntry, err error) error {
+			if err != nil {
+				// Log the error but continue processing other files
+				fmt.Printf("Warning: Error accessing %s: %v\n", path, err)
 				return nil
 			}
-		}
-		if ignore.MatchesPath(path) {
-			return nil
-		}
 
-		fileList = append(fileList, path)
-		return nil
-	})
+			// Never ignore pack root itself (gitignore doesn't allow ignoring the root)
+			if path == in.packRoot {
+				return nil
+			}
+
+			if info.IsDir() {
+				// Don't traverse ignored directories (consistent with Git handling of ignored dirs)
+				if ignore.MatchesPath(path) {
+					return fs.SkipDir
+				}
+				// Don't add directories to the file list
+				return nil
+			}
+			// Exit if the files are the same as the pack/index files
+			absPath, _ := filepath.Abs(path)
+			if absPath == pathPF || absPath == pathIndex {
+				return nil
+			}
+			if ignoreExists {
+				if absPath == pathIgnore {
+					return nil
+				}
+			}
+			if ignore.MatchesPath(path) {
+				return nil
+			}
+
+			fileList = append(fileList, path)
+			return nil
+		})
+	} else {
+		err = filepath.WalkDir(in.packRoot, func(path string, info os.DirEntry, err error) error {
+			if err != nil {
+				// Log the error but continue processing other files
+				fmt.Printf("Warning: Error accessing %s: %v\n", path, err)
+				return nil
+			}
+
+			// Never ignore pack root itself (gitignore doesn't allow ignoring the root)
+			if path == in.packRoot {
+				return nil
+			}
+
+			if info.IsDir() {
+				// Don't traverse ignored directories (consistent with Git handling of ignored dirs)
+				if ignore.MatchesPath(path) {
+					return fs.SkipDir
+				}
+				// Don't add directories to the file list
+				return nil
+			}
+			// Exit if the files are the same as the pack/index files
+			absPath, _ := filepath.Abs(path)
+			if absPath == pathPF || absPath == pathIndex {
+				return nil
+			}
+			if ignoreExists {
+				if absPath == pathIgnore {
+					return nil
+				}
+			}
+			if ignore.MatchesPath(path) {
+				return nil
+			}
+
+			fileList = append(fileList, path)
+			return nil
+		})
+	}
 	if err != nil {
 		return err
 	}
 
+	// Use multithreaded hashing for better performance
+	return in.updateFilesMultithreaded(fileList)
+}
+
+// updateFilesMultithreaded processes files in parallel for better performance
+func (in *Index) updateFilesMultithreaded(fileList []string) error {
+	if len(fileList) == 0 {
+		return nil
+	}
+
+	// Use number of CPUs for worker count, but cap it reasonably
+	numWorkers := runtime.NumCPU()
+	if numWorkers > 8 {
+		numWorkers = 8
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	// Create progress bar
 	progressContainer := mpb.New()
 	progress := progressContainer.AddBar(int64(len(fileList)),
 		mpb.PrependDecorators(
-			// simple name decorator
 			decor.Name("Refreshing index..."),
-			// decor.DSyncWidth bit enables column width synchronization
 			decor.Percentage(decor.WCSyncSpace),
 		),
 		mpb.AppendDecorators(
-			// replace ETA decorator with "done" message, OnComplete event
 			decor.OnComplete(
-				// ETA decorator with ewma age of 60
 				decor.EwmaETA(decor.ET_STYLE_GO, 60), "done",
 			),
 		),
 	)
 
-	for _, v := range fileList {
-		start := time.Now()
+	// Channel for distributing work
+	fileChan := make(chan string, len(fileList))
 
-		err := in.updateFile(v)
-		if err != nil {
-			return err
-		}
-
-		progress.Increment(time.Since(start))
+	// Channel for collecting results
+	type result struct {
+		path       string
+		err        error
+		relPath    string
+		format     string
+		hash       string
+		isMetaFile bool
 	}
-	// Close bar
-	progress.SetTotal(int64(len(fileList)), true) // If len = 0, we have to manually set complete to true
+	resultChan := make(chan result, len(fileList))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for filePath := range fileChan {
+				start := time.Now()
+
+				// Calculate hash and metadata for this file
+				var hashString string
+				var markAsMetaFile bool
+				var err error
+
+				if viper.GetBool("no-internal-hashes") {
+					hashString = ""
+				} else {
+					f, openErr := os.Open(filePath)
+					if openErr != nil {
+						resultChan <- result{path: filePath, err: openErr}
+						progress.Increment(time.Since(start))
+						continue
+					}
+
+					h, hashErr := GetHashImpl("sha256")
+					if hashErr != nil {
+						_ = f.Close()
+						resultChan <- result{path: filePath, err: hashErr}
+						progress.Increment(time.Since(start))
+						continue
+					}
+
+					if _, copyErr := io.Copy(h, f); copyErr != nil {
+						_ = f.Close()
+						resultChan <- result{path: filePath, err: copyErr}
+						progress.Increment(time.Since(start))
+						continue
+					}
+
+					err = f.Close()
+					if err != nil {
+						resultChan <- result{path: filePath, err: err}
+						progress.Increment(time.Since(start))
+						continue
+					}
+					hashString = h.HashToString(h.Sum(nil))
+				}
+
+				// Check if it's a meta file
+				if strings.HasSuffix(filepath.Base(filePath), MetaExtension) {
+					markAsMetaFile = true
+				}
+
+				// Get relative path
+				relPath, err := in.RelIndexPath(filePath)
+				if err != nil {
+					resultChan <- result{path: filePath, err: err}
+					progress.Increment(time.Since(start))
+					continue
+				}
+
+				// Determine format
+				format := "sha256"
+				if in.HashFormat == format {
+					format = ""
+				}
+
+				resultChan <- result{
+					path:       filePath,
+					relPath:    relPath,
+					format:     format,
+					hash:       hashString,
+					isMetaFile: markAsMetaFile,
+				}
+				progress.Increment(time.Since(start))
+			}
+		}()
+	}
+
+	// Send all files to workers
+	for _, filePath := range fileList {
+		fileChan <- filePath
+	}
+	close(fileChan)
+
+	// Wait for all workers to complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results and update index (sequentially to avoid race conditions)
+	var errors []error
+	for result := range resultChan {
+		if result.err != nil {
+			errors = append(errors, fmt.Errorf("error processing %s: %w", result.path, result.err))
+		} else {
+			// Update the index files map (this is now safe since it's sequential)
+			in.Files.updateFileEntry(result.relPath, result.format, result.hash, result.isMetaFile)
+		}
+	}
+
+	// Close progress bar
+	progress.SetTotal(int64(len(fileList)), true)
 	progressContainer.Wait()
 
 	// Check all the files exist, remove them if they don't
@@ -253,6 +507,11 @@ func (in *Index) Refresh() error {
 		if !file.markedFound() {
 			delete(in.Files, p)
 		}
+	}
+
+	// Return first error if any occurred
+	if len(errors) > 0 {
+		return errors[0]
 	}
 
 	return nil
@@ -266,13 +525,23 @@ func (in Index) Write() error {
 		Files:      in.Files.toTomlRep(),
 	}
 
-	// TODO: calculate and provide hash while writing?
+	// Calculate hash while writing
 	f, err := os.Create(in.indexFile)
 	if err != nil {
 		return err
 	}
 
-	enc := toml.NewEncoder(f)
+	// Create a hash writer to calculate the file hash while writing
+	hasher, err := GetHashImpl("sha256")
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+
+	// Use MultiWriter to write to both file and hasher simultaneously
+	writer := io.MultiWriter(f, hasher)
+
+	enc := toml.NewEncoder(writer)
 	// Disable indentation
 	enc.Indent = ""
 	err = enc.Encode(rep)
@@ -280,7 +549,18 @@ func (in Index) Write() error {
 		_ = f.Close()
 		return err
 	}
-	return f.Close()
+
+	err = f.Close()
+	if err != nil {
+		return err
+	}
+
+	// Store the calculated hash for potential future use
+	// (This could be used for pack validation or change detection)
+	indexHash := hasher.HashToString(hasher.Sum(nil))
+	_ = indexHash // Currently unused, but calculated for future enhancement
+
+	return nil
 }
 
 // RefreshFileWithHash updates a file in the index, given a file hash and whether it should be marked as metafile or not

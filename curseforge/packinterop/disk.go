@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/packwiz/packwiz/core"
 )
 
 type diskFile struct {
@@ -45,7 +47,7 @@ func (s diskPackSource) GetFile(path string) (ImportPackFile, error) {
 
 func (s diskPackSource) GetFileList() ([]ImportPackFile, error) {
 	list := make([]ImportPackFile, 0)
-	err := filepath.Walk(s.BasePath, func(path string, info os.FileInfo, err error) error {
+	err := core.WalkFollowSymlinks(s.BasePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}

@@ -2,8 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/spf13/viper"
 	"os"
+
+	"github.com/spf13/viper"
 
 	"github.com/packwiz/packwiz/core"
 	"github.com/spf13/cobra"
@@ -32,7 +33,12 @@ var refreshCmd = &cobra.Command{
 			fmt.Println(err)
 			os.Exit(1)
 		}
-		err = index.Refresh()
+		noFollowSymlinks, err := cmd.Flags().GetBool("no-follow-symlinks")
+		if err != nil {
+			noFollowSymlinks = false
+		}
+		followSymlinks := !noFollowSymlinks
+		err = index.RefreshWithOptions(followSymlinks)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -60,4 +66,5 @@ func init() {
 	rootCmd.AddCommand(refreshCmd)
 
 	refreshCmd.Flags().Bool("build", false, "Only has an effect in no-internal-hashes mode: generates internal hashes for distribution with packwiz-installer")
+	refreshCmd.Flags().Bool("no-follow-symlinks", false, "Don't follow symbolic links when refreshing the index (default is to follow them)")
 }
